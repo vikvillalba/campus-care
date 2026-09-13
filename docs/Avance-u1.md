@@ -21,14 +21,13 @@ la red interna, aprovechando que `preview()` no valida el url que está recibien
 - Control propuesto: Validar la URL con una whitelist de esquemas y de dominios permitidos y también resolver el DNS antes de conectar y rechazar la petición si la IP puede ocasionar problemas.
 - Prueba que validaría el control: Un usuario solicita `preview` con `url=http://169.254.169.254/latest/meta-data/` (o `http://localhost/admin`); el sistema debe rechazar la petición con una excepción/error antes de intentar conectarse, sin llegar a hacer la llamada HTTP saliente.
 
-## Hallazgo 2
+### Hallazgo 2
 
 en CommentController:
 ```
     public String preview(@RequestParam String text) {
         return "<article><h2>Vista previa</h2><p>" + text + "</p></article>";
     }
-}
 ```
 - Actor: Un usuario externo o atacante.
 - Activo: La sesión y los datos del navegador de un usuario (cookies, tokens, acciones realizadas en su nombre dentro del sistema)
@@ -41,7 +40,7 @@ haciendo que el script se ejecute en el navegador de cualquier usuario que abra 
 - Control propuesto: Escapar el contenido de `text` antes de insertarlo en el HTML (encoding de salida, ej. `HtmlUtils.htmlEscape(text)`) y además **quitar `'unsafe-inline'` de la CSP ya configurada** en `SecurityConfig` (`default-src 'self' 'unsafe-inline'`), ya que actualmente esa directiva permite que cualquier script inline se ejecute y anula la defensa en profundidad.
 - Prueba que validaría el control: Un usuario solicita `preview` con `text=<script>alert(1)</script>` y la respuesta debe contener el texto escapado (`&lt;script&gt;alert(1)&lt;/script&gt;`) y no debe ejecutarse ningún script en el navegador.
 
-## Hallazgo 3
+### Hallazgo 3
 
 en TicketController:
 ```
@@ -63,3 +62,20 @@ public Ticket one(@PathVariable Long id){
 - Amenaza redactada: Un usuario autenticado con credenciales válidas puede llamar a `GET /api/tickets` para obtener el listado completo de tickets de todos los usuarios, o iterar `GET /api/tickets/{id}` con ids consecutivos, y en ambos casos recibir tickets incluyendo notas privadas de otros usuarios aprovechando que ninguno de los métodos validan el usuario y el dueño del ticket.
 - Control propuesto: En `all()`, filtrar por el `owner` igual al usuario autenticado a menos que su rol sea SUPPORT/ADMIN. En `one(id)` verificar que `ticket.getOwner()` coincida con el usuario autenticado o que su rol tenga permiso explícito.
 - Prueba que validaría el control: Un usuario autenticado como `rivera`, solicita `GET /api/tickets/{id}` de un ticket cuyo `owner` es `lopez`, el sistema debe responder 403/404 en vez de devolver el ticket. Autenticado como `rivera`, `GET /api/tickets` solo debe devolver tickets propios (o los que su rol autorice), pero no tickets de otros estudiantes.
+
+## Diagrama del Sistema
+
+![Diagrama Campuscare U1](diagramas/Campuscare_diagrama_u1.png)
+
+### Justificación de controles
+El sistema se organiza dentro de un enclave de referencia (Contenedor Docker en la zona confiable): todo acceso externo debe pasar obligatoriamente por uno de los tres controladores (CommentController, PreviewController, TicketController) antes de llegar a la base de datos H2, sin rutas alternativas de acceso a los datos.
+
+1. PreviewController y TicketController exigen autenticación HTTP Basic en cada request, sin confiar en sesiones previas ni en la procedencia de la red. Sin embargo, CommentController no cuenta con autenticación `permitAll()`, lo que rompe el principio de Zero Trust en ese punto de entrada. Se propone extender la autenticación obligatoria también a la ruta `/api/comments/preview`.
+
+2. Actualmente, TicketController devuelve todos los tickets a cualquier usuario autenticado (`findAll()` sin filtrar), sin distinguir entre alumno y agente/admin. Se propone agregar una segunda capa de control más allá de la autenticación: filtrado por `owner` a los alumnos, y verificación explícita de rol en backend para el acceso a la lista global. Evitando así depender de que el frontend oculte información que el backend igual entregaría.
+
+3. PreviewController recibe una URL del usuario y hace una petición sin ninguna validación actualmente. Se propone agregar verificación de destino (bloqueo de IPs privadas, localhost y endpoints de metadata) antes de permitir la petición, evitando que el servidor pueda usarse como proxy hacia la red interna del enclave.
+
+4. H2 corre en modo archivo (campuscare.mv.db persiste en disco) sin cifrado. Se propone habilitar el parámetro CIPHER de H2 para proteger los datos ante acceso directo al filesystem del contenedor.
+
+Riesgos que permanecen abiertos incluso con los controles propuestos aplicados: El transporte es HTTP sin cifrar, por lo que las credenciales de Basic Auth viajan codificadas pero no cifradas por la red; y no habría autenticación mutua entre TicketController/JpaRepository y la base de datos dentro del mismo contenedor, dejando que ese tramo dependa únicamente del perímetro del enclave.
