@@ -12,10 +12,10 @@ Baseline de Ciberseguridad Aplicada en Java 21 y Spring Boot 3. Incluye API HTTP
 
 ## Equipo
 
-- Líder inicial: NOMBRE
-- Responsable de evidencia: NOMBRE
-- Responsable de calidad: NOMBRE
-- Integrante adicional: NOMBRE (si aplica)
+- Líder inicial: Victoria Villalba
+- Responsable de evidencia: Lucía Vasquez
+- Responsable de calidad: Marisol Ruiz
+- Integrante adicional: Pablo Zamora
 
 No publiques matrículas, correos o teléfonos. Los roles rotan por unidad.
 
