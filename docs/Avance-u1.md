@@ -79,3 +79,20 @@ El sistema se organiza dentro de un enclave de referencia (Contenedor Docker en 
 4. H2 corre en modo archivo (campuscare.mv.db persiste en disco) sin cifrado. Se propone habilitar el parámetro CIPHER de H2 para proteger los datos ante acceso directo al filesystem del contenedor.
 
 Riesgos que permanecen abiertos incluso con los controles propuestos aplicados: El transporte es HTTP sin cifrar, por lo que las credenciales de Basic Auth viajan codificadas pero no cifradas por la red; y no habría autenticación mutua entre TicketController/JpaRepository y la base de datos dentro del mismo contenedor, dejando que ese tramo dependa únicamente del perímetro del enclave.
+
+## Decisiones de diseño 
+
+### Decisión 1 - Control de acceso a tickets
+**Solución elegida:** mover la verificación de propiedad y rol al backend, dentro de `TicketController`. En `all()` filtrar por `owner == authentication.getName()` salvo que el rol sea `SUPPORT`/`ADMIN`, en `one(id)` rechazar con 403/404 si el `ticket.getOwner()` no coincide con el usuario autenticado. Cada request se valida por sí misma, sin asumir que el cliente ya filtró nada.
+
+**Alternativa considerada:** ocultar el campo `privateNote` o filtrar los tickets solo del lado del frontend, dejando la API tal cual. Se descartó porque es un **diseño inseguro**, cualquiera puede llamar `GET /api/tickets/{id}` directo, sin pasar por el frontend, y seguiría recibiendo los datos completos. Confiar en que el cliente "no muestre" algo no es un control de seguridad.
+
+**Riesgo que queda abierto:** aunque se filtre por owner, no hay registro de los intentos de acceso denegados, si alguien intenta iterar ids ajenos, el sistema lo bloquea pero nadie se entera que pasó. Tampoco se resuelve que las credenciales viajan por HTTP Basic sin TLS.
+
+### Decisión 2 — Validación de destino en PreviewController (Defensa en profundidad)
+
+**Solución elegida:** antes de conectar en `preview(url)`, revisar que la URL empiece con `http`/`https`, buscar a qué dirección apunta realmente y rechazarla si apunta a la propia máquina o a la red interna (por ejemplo `169.254.169.254`, que guarda datos sensibles del servidor). De ser posible, solo permitir una lista de dominios ya conocidos como seguros. Esto se suma a la autenticación que ya existe en el endpoint, si un control falla, el otro sigue protegiendo.
+
+**Alternativa considerada:** bloquear solo una lista de direcciones "malas" conocidas, en vez de decidir qué sí está permitido. Se descartó por ser también un **diseño inseguro**, esa lista nunca cubre todo, y un dominio puede cambiar a qué dirección apunta justo después de pasar la validación, evadiéndola.
+
+**Riesgo que queda abierto:** si el servidor sigue automáticamente un link que redirige a otro, alguien podría dar una URL que pasa la validación inicial pero termina llevando a una dirección interna prohibida. Falta revisar el destino de nuevo en cada salto de redirect.
